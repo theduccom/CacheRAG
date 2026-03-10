@@ -1,0 +1,24 @@
+#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include<iomanip>
+#include <cmath>
+#include <queue>
+#include <stack>
+#include <map>
+#include <cstdio>
+
+using namespace std;
+
+int main()
+{
+	for (int i = 1; i <= 9; ++i)
+	{
+		for (int j = 1; j <= 9; ++j)
+		{
+			cout<<i<<"x"<<j<<"="<<i*j<<endl;
+		}
+	}
+	return 0;
+}

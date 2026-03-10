@@ -1,0 +1,102 @@
+#define DEBUG_ON
+#define CONDITION true
+using namespace std;/*{{{*/
+
+#include <algorithm>
+#include <cassert>
+#include <cctype>
+#include <climits>
+#include <cmath>
+#include <complex>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <iostream>
+#include <iterator>
+#include <list>
+#include <map>
+#include <numeric>
+#include <queue>
+#include <set>
+#include <sstream>
+#include <stack>
+#include <string>
+#include <sys/time.h>
+#include <vector>
+
+#define INF (1e9)
+static const double PI (3.14159265358979323846);
+static const double EPS (1e-10);
+
+typedef long long int ll;
+typedef unsigned long long int ull;
+typedef vector<int> vi;
+typedef vector<vi> vvi;
+typedef vector<string> vs;
+typedef pair<int, int> pii;
+typedef complex<double> P;
+
+inline int toInt(string s) {int v; istringstream sin(s);sin>>v;return v;}
+template<class T> inline string toString(T x) {ostringstream sout;sout<<x;return sout.str();}
+inline double now(){ struct timeval tv; gettimeofday(&tv, NULL); return ((double)(tv.tv_sec) + (double)(tv.tv_usec) * 1e-6); }
+
+#define FOR(i, b, e) for (typeof(b) i = (b); assert((i) <= (e)), i != (e); ++i)
+#define REP(i, n) FOR(i, 0, n)
+
+#define IFC(c) if(c) continue;
+#define IFB(c) if(c) break;
+#define IFR(c, r) if(c) return r;
+
+#define OPOVER(_op, _type) inline bool operator _op (const _type &t) const
+
+#define arrsz(a) ( sizeof(a) / sizeof(a[0]) )
+
+#define F first
+#define S second
+#define MP(a, b) make_pair(a, b)
+
+#define SZ(a) ((ll)a.size())
+#define PB(e) push_back(e)
+#define SORT(v) sort((v).begin(), (v).end())
+#define RSORT(v) sort((v).rbegin(), (v).rend())
+
+#define ALL(a) (a).begin(), (a).end()
+#define RALL(a) (a).rbegin(), (a).rend()
+#define EACH(c,it) for(__typeof((c).begin()) it=(c).begin(); it!=(c).end(); ++it)
+#define EXIST(s,e) ((s).find(e)!=(s).end())
+
+#define BIT(n) (1ULL << (n))
+#define BITOF(n, m) ((n) >> (m) & 1)
+
+#define RANGE(a, b, c) ((a) <= (b) && (b) <= (c))
+
+#ifdef DEBUG_ON
+#define dprt(fmt, ...) if (CONDITION) fprintf(stderr, fmt, __VA_ARGS__)
+#define darr(a) if (CONDITION) copy( (a), (a) + arrsz(a), ostream_iterator<int>(cerr, " ") ); cerr << endl
+#define darr_range(a, f, t) if (CONDITION) copy( (a) + (f), (a) + (t), ostream_iterator<int>(cerr, " ") ); cerr << endl
+#define dvec(v) if (CONDITION) copy( ALL(v), ostream_iterator<int>(cerr, " ") ); cerr << endl
+#define darr2(a, n, m) if (CONDITION) FOR(i, 0, (n)){ darr_range( (a)[i], 0, (m) ); }
+#define dvec2(v) if (CONDITION) FOR(i, 0, SZ(v)){ dvec( (v)[i] ); }
+#define WAIT() if (CONDITION) { string _wait_; cerr << "(hit return to continue)" << endl; getline(cin, _wait_); }
+#else
+#define cerr if(0) cerr
+#define dprt(fmt, ...)
+#define darr(a)
+#define darr_range(a, f, t)
+#define dvec(v)
+#define darr2(a, n, m)
+#define dvec2(v)
+#define WAIT()
+#endif
+/*}}}*/
+
+int main(int argc, char const* argv[])
+{
+	FOR (i, 1, 10) {
+		FOR (j, 1, 10) {
+			cout << toString(i) << "x" << toString(j) << "=" << i * j << endl;
+		}
+	}
+	return 0;
+}

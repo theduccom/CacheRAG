@@ -1,0 +1,52 @@
+//include----------------------------------------------------------------------------------------------------------------------
+#include <bits/stdc++.h>
+
+//using namespace--------------------------------------------------------------------------------------------------------------
+using namespace std;
+
+//define-----------------------------------------------------------------------------------------------------------------------
+#define rep(i, n) for(int i = 0; i < n; i++)
+#define FOR(i, s, n) for(int i = s; i < n; i++)
+#define per(i, n) for(int i = n; i >= 0; i--)
+#define ROF(i, s, n) for(int i = s; i >= n; i--)
+#define FORIT(i, A) for (auto i : A)
+#define PRINT(x) cout << (x) << endl
+#define ALL(a) (a).begin(),(a).end()
+#define RALL(a) (a).rbegin(), (a).rend()
+#define PB push_back
+#define MP make_pair
+#define FOREACH(i, n) for (__typeof((n).begin()) i = (n).begin(); i != (n).end(); ++i)
+#define SZ(a) int((a).size())
+#define EACH(i,c) for(typeof((c).begin()) i=(c).begin(); i!=(c).end(); ++i)
+#define EXIST(s,e) ((s).find(e)!=(s).end())
+#define SORT(c) sort((c).begin(),(c).end())
+#define INF 1 << 25
+#define CLR(a) memset((a), 0 ,sizeof(a))
+#define dump(x) cerr << #x << " = " << (x) << endl;
+#define debug(x) cerr << #x << " = " << (x) << " (L" << __LINE__ << ")" << " " << __FILE__ << endl;
+#define sq(n) (n) * (n)
+
+//typedef----------------------------------------------------------------------------------------------------------------------
+typedef vector<int> VI;
+typedef vector<VI> VVI;
+typedef vector<string> VS;
+typedef pair<int, int> PII;
+typedef long long LL;
+typedef unsigned int uint;
+typedef unsigned long long ull;
+
+//const------------------------------------------------------------------------------------------------------------------------
+const double EPS = 1e-10;
+const double PI = acos( -1.0 );
+
+//global-----------------------------------------------------------------------------------------------------------------------
+
+//function---------------------------------------------------------------------------------------------------------------------
+int main() {
+    FOR(i, 1, 10){
+        FOR(j, 1, 10){
+            printf("%dx%d=%d\n", i, j, i * j);
+        }
+    }
+    return 0;
+}
