@@ -1,5 +1,7 @@
 SHELL := /bin/bash
 
+PYTHON := python3
+
 ROOT := $(shell pwd)
 SCRIPTS := scripts
 DATASET := dataset
@@ -41,7 +43,7 @@ submissions: scripts
 	./$(SCRIPTS)/get_submissions.sh $(DATASET) $(TEST) p$(P)
 
 benchmark:
-	$(PYTHON) src/benchmark.py 2>&1 | tee benchmark.txt
+	$(PYTHON) src/benchmark.py 2>&1 | tee benchmark_out.txt
 
 inputs: scripts
 	./$(SCRIPTS)/generate_inputs.sh -d $(INPUT) -f $(FLAGS)
@@ -72,10 +74,10 @@ copy-dataset: scripts
 # Clean recipies
 
 clean:
-	rm -rf test/ out/ inputs/ data/csv/ benchmark_out.txt
+	rm -rf benchmark_out.txt out.txt
 
 clean-data:
-	rm -rf data/csv
+	rm -rf inputs/ results/
 
 clean-codenet:
 	@echo "Confirm: remove Project_CodeNet dataset (~75 GB)?"

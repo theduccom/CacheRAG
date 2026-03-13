@@ -19,11 +19,10 @@ from __future__ import annotations
 import csv
 import multiprocessing as mp
 import subprocess
+import time
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Iterator, List, Tuple
-
-import time
 
 
 # Configuration
@@ -55,6 +54,8 @@ TIMEOUT: int = 60
 VERBOSE: bool = True
 SILENT: bool = False
 
+log_queue: mp.SimpleQueue = mp.SimpleQueue()
+
 
 # Logging functions
 
@@ -65,7 +66,7 @@ def info(msg: str) -> None:
     Messages are only printed if VERBOSE mode is enabled.
     """
     if VERBOSE:
-        print(f"  (i) {msg}")
+        log_queue.put(f"(I) {msg}")
 
 
 def warn(msg: str) -> None:
@@ -75,7 +76,7 @@ def warn(msg: str) -> None:
     Messages are suppressed if SILENT mode is enabled.
     """
     if not SILENT:
-        print(f"  (w) {msg}")
+        log_queue.put(f" (W) {msg}")
 
 
 # Data Classes
@@ -145,6 +146,8 @@ def retrieve_submissions() -> Iterator[Submission]:
 
             yield Submission(problem, source, binary)
 
+        info(f"Problem {problem} complete")
+
 
 # Compilation
 
@@ -181,7 +184,7 @@ def compile_submission(subm: Submission) -> bool:
 
 # Job Generation
 
-def generate_jobs(queue: mp.Queue[BenchmarkJob | None]) -> None:
+def generate_jobs(sem: mp.Semaphore, queue: mp.SimpleQueue) -> None:
     """
     Generate benchmarking jobs and enqueue them for worker processes.
 
@@ -190,7 +193,7 @@ def generate_jobs(queue: mp.Queue[BenchmarkJob | None]) -> None:
 
     Parameters
     ----------
-    queue : mp.Queue[BenchmarkJob | None]
+    queue : mp.SimpleQueue
         Multiprocessing queue used to distribute BenchmarkJob objects
         to worker processes.
     """
@@ -208,6 +211,7 @@ def generate_jobs(queue: mp.Queue[BenchmarkJob | None]) -> None:
         if not input_file.exists():
             input_file = None
 
+        sem.acquire()
         queue.put(BenchmarkJob(subm, input_file, name))
 
 
@@ -246,7 +250,9 @@ def parse_summary(path: Path) -> List[int]:
 
 # Worker Process
 
-def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
+def worker(
+    sem: mp.Semaphore, job_queue: mp.SimpleQueue, result_queue: mp.SimpleQueue
+) -> None:
     """
     Worker process responsible for executing Cachegrind jobs.
 
@@ -275,6 +281,9 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
             if outfile.exists():
                 outfile.unlink()
             return
+
+        # Decrement job_queue size
+        sem.release()
 
         # Open input file if it exists
         stdin_file = job.input_file.open("rb") if job.input_file else None
@@ -307,7 +316,7 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=TIMEOUT,
-                    check=False,
+                    check=True,
                 )
                 # Parse metrics from Cachegrind output and put to result queue
                 metrics: List[int] = parse_summary(outfile)
@@ -316,6 +325,12 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
         except subprocess.TimeoutExpired:
             warn(f"Timeout: {job.name} ({l1},{l2})")
 
+        except subprocess.CalledProcessError:
+            warn(f"Cachegrind failed: {job.name} ({l1},{l2})")
+        
+        except RuntimeError as e:
+            warn(f"{str(e)}: {job.name} ({l1},{l2})")
+
         finally:
             if stdin_file is not None:
                 stdin_file.close()
@@ -323,7 +338,7 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
 
 # Result Writer
 
-def writer(result_queue: mp.Queue) -> None:
+def writer(result_queue: mp.SimpleQueue) -> None:
     """
     Consume benchmark results and write them to a CSV file.
 
@@ -359,34 +374,46 @@ def writer(result_queue: mp.Queue) -> None:
 
         while True:
             # Retrieve next benchmark result
-            row = result_queue.get()
+            row: tuple | None = result_queue.get()
             if row is None:
                 return
 
             csv_writer.writerow(row)
 
 
+def logger(log_queue: mp.SimpleQueue) -> None:
+    """
+    Dedicated logging process that prints messages from other processes.
+    Ensures ordered, non-interleaved output.
+    """
+    while True:
+        msg = log_queue.get()
+        if msg is None:
+            break
+        timestamp: str = time.strftime("%H:%M:%S")
+        print(f"[{timestamp}] {msg}", flush=True)
+
+
 def main() -> None:
     """
     Entry point for the benchmark pipeline.
-
-    Responsibilities
-    ----------------
-    1. Create required directories
-    2. Start writer process
-    3. Spawn worker processes
-    4. Generate benchmark jobs
-    5. Coordinate process shutdown
     """
+
     # Create output directories
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Create logging process
+    logger_proc: mp.Process = mp.Process(target=logger, args=(log_queue,), daemon=True)
+    logger_proc.start()
+
     info(f"Workers: {NUM_WORKERS}")
 
     # Create multiprocessing queues
-    job_queue: mp.Queue = mp.Queue(maxsize=NUM_WORKERS * 4)
-    result_queue: mp.Queue = mp.Queue()
+    # job_queue: mp.Queue = mp.Queue(maxsize=NUM_WORKERS * 4)
+    sem: mp.Semaphore = mp.Semaphore(NUM_WORKERS * 4)
+    job_queue: mp.SimpleQueue = mp.SimpleQueue()
+    result_queue: mp.SimpleQueue = mp.SimpleQueue()
 
     # Generate CSV writer process
     writer_proc: mp.Process = mp.Process(target=writer, args=(result_queue,))
@@ -395,15 +422,17 @@ def main() -> None:
     # Generate worker processes
     workers: List[mp.Process] = []
     for _ in range(NUM_WORKERS):
-        p: mp.Process = mp.Process(target=worker, args=(job_queue, result_queue))
+        p: mp.Process = mp.Process(
+            target=worker, args=(sem, job_queue, result_queue)
+        )
         p.start()
         workers.append(p)
 
     info("Starting benchmark")
-    start_time = time.perf_counter()
+    start_time: float = time.perf_counter()
 
     # Generate jobs and put them onto the job queue
-    generate_jobs(job_queue)
+    generate_jobs(sem, job_queue)
 
     for _ in workers:
         job_queue.put(None)
@@ -414,9 +443,16 @@ def main() -> None:
     result_queue.put(None)
     writer_proc.join()
 
-    elapsed = time.perf_counter() - start_time
+    # Format elapsed time
+    elapsed: float = time.perf_counter() - start_time
+    hours, rem = divmod(elapsed, 3600)
+    minutes, seconds = divmod(rem, 60)
+
     info("Benchmark complete")
-    info(f"Total benchmark time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
+    info(f"Total benchmark time: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+
+    log_queue.put(None)
+    logger_proc.join()
 
 
 if __name__ == "__main__":
