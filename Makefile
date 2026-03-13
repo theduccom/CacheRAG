@@ -41,7 +41,7 @@ submissions: scripts
 	./$(SCRIPTS)/get_submissions.sh $(DATASET) $(TEST) p$(P)
 
 benchmark:
-	./$(SCRIPTS)/benchmark.sh -d $(DATA) -i $(INPUT) -t $(TEST) -x $(FLAGS)
+	$(PYTHON) src/benchmark.py 2>&1 | tee benchmark.txt
 
 inputs: scripts
 	./$(SCRIPTS)/generate_inputs.sh -d $(INPUT) -f $(FLAGS)
@@ -107,10 +107,10 @@ generate:
 # tmux commands
 
 tmux:
-	@tmux new -s RAG
+	@tmux new -s CacheRAG
 
 attach:
-	@tmux attach -t RAG
+	@tmux attach -t CacheRAG
 
 detach:
 	@tmux detach

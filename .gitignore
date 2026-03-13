@@ -5,4 +5,4 @@ embedded/
 inputs/
 data/
 test/
-out/
+benchmark.txt

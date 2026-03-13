@@ -1,24 +1,17 @@
 #!/usr/bin/env python3
 """
-Cachegrind Benchmark Runner for Project CodeNet
+Cachegrind Benchmark Script for Project CodeNet.
 
 This script benchmarks C++ submissions from the Project CodeNet dataset
 using Valgrind's Cachegrind tool across multiple simulated cache sizes.
 
-Pipeline Architecture
----------------------
+Pipeline
+--------
 
-Dataset -> Compilation -> Job Queue -> Worker Processes -> Result Queue -> CSV Writer
+Dataset -> Compilation -> Job Queue -> Worker Processes -> Result Queue -> CSV
 
-1. The dataset directory is scanned for C++ submissions.
-2. Each submission is compiled into a binary.
-3. For each compiled binary and cache configuration, a BenchmarkJob is created.
-4. Worker processes execute Cachegrind on each job.
-5. The writer process collects results and stores them in a CSV file.
-
-Multiprocessing is used to parallelize the expensive Cachegrind runs.
-
-Designed to scale to very large datasets (100k+ submissions).
+Workers execute Cachegrind and send parsed metrics to a dedicated
+writer process which writes results to a CSV file.
 """
 
 from __future__ import annotations
@@ -30,11 +23,14 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Iterator, List, Tuple
 
+import time
+
 
 # Configuration
 
 DATASET_DIR: Path = Path("dataset")
 BUILD_DIR: Path = Path("/dev/shm/build")
+INPUT_DIR: Path = Path("inputs")
 RESULT_DIR: Path = Path("results")
 RESULT_FILE: Path = RESULT_DIR / "benchmark.csv"
 
@@ -52,7 +48,7 @@ CACHE_CONFIGS: List[Tuple[int, int]] = [
     (128 * 1024, 4 * 1024 * 1024)
 ]
 
-NUM_WORKERS: int = max(1, mp.cpu_count() - 1)
+NUM_WORKERS: int = max(1, mp.cpu_count() - 2)
 TIMEOUT: int = 60
 
 # Logging options
@@ -69,7 +65,7 @@ def info(msg: str) -> None:
     Messages are only printed if VERBOSE mode is enabled.
     """
     if VERBOSE:
-        print(f"(i) {msg}")
+        print(f"  (i) {msg}")
 
 
 def warn(msg: str) -> None:
@@ -79,7 +75,7 @@ def warn(msg: str) -> None:
     Messages are suppressed if SILENT mode is enabled.
     """
     if not SILENT:
-        print(f"(w) {msg}")
+        print(f"  (w) {msg}")
 
 
 # Data Classes
@@ -108,13 +104,19 @@ class Submission:
 
 @dataclass(frozen=True)
 class BenchmarkJob:
-    """Represents a single Cachegrind benchmarking job."""
+    """
+    Represents a single Cachegrind benchmarking job.
 
-    problem: str
-    binary: Path
-    submission: str
-    l1: int
-    l2: int
+    Attributes
+    ----------
+    submission : Submission
+    input_file : Path | None
+    name : str
+    """
+
+    submission: Submission
+    input_file: Path | None
+    name: str
 
 
 # Dataset Processing
@@ -135,12 +137,13 @@ def retrieve_submissions() -> Iterator[Submission]:
             continue
 
         problem: str = problem_dir.name
-        for src in sorted(problem_dir.glob("*.cpp")):
+
+        for source in sorted(problem_dir.glob("*.cpp")):
             # Construct build path: BUILD_DIR/problem/submission
-            rel: Path = src.relative_to(DATASET_DIR)
+            rel: Path = source.relative_to(DATASET_DIR)
             binary: Path = BUILD_DIR / rel.with_suffix("")
 
-            yield Submission(problem, src, binary)
+            yield Submission(problem, source, binary)
 
 
 # Compilation
@@ -149,7 +152,8 @@ def compile_submission(subm: Submission) -> bool:
     """
     Compile a submission into a binary executable.
 
-    Return:
+    Returns
+    -------
     bool
         True if compilation succeeds, False otherwise.
     """
@@ -161,7 +165,7 @@ def compile_submission(subm: Submission) -> bool:
     # Create a build directory for the problem
     subm.binary.parent.mkdir(parents=True, exist_ok=True)
 
-    # Construct compiler command: `g++ -O2 -g --std=c++17 .cpp -o .out`
+    # Construct compiler command: `g++ -O2 -g --std=c++17 src.cpp -o src`
     cmd: List[str] = (
         [CXX] + CXX_FLAGS + [str(subm.source), "-o", str(subm.binary)]
     )
@@ -195,20 +199,16 @@ def generate_jobs(queue: mp.Queue[BenchmarkJob | None]) -> None:
         # Skip submissions that fail compilation
         if not compile_submission(subm):
             continue
+        
+        # Extract the benchmark name as 'problem/submission'
+        name: str = str(subm.source.relative_to(DATASET_DIR).with_suffix(""))
 
-        subm_name = subm.binary.stem
+        # Create path to input file if the problem needs one
+        input_file: Path = INPUT_DIR / f"{subm.problem}.txt"
+        if not input_file.exists():
+            input_file = None
 
-        # Create one job per cache configuration
-        for l1, l2 in CACHE_CONFIGS:
-            queue.put(
-                BenchmarkJob(
-                    problem=subm.problem,
-                    binary=subm.binary,
-                    submission=subm_name,
-                    l1=l1,
-                    l2=l2,
-                )
-            )
+        queue.put(BenchmarkJob(subm, input_file, name))
 
 
 # Cachegrind Parsing
@@ -252,11 +252,9 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
 
     Workers repeatedly pull BenchmarkJob objects from the job queue,
     execute Cachegrind, parse the output metrics, and push results
-    to the result queue.
-
-    Shutdown Protocol
-    -----------------
-    The worker exits when it receives a `None` sentinel from job_queue.
+    to the result queue. Each job represents a single compiled
+    submission. The worker runs Cachegrind for every cache
+    configuration defined in CACHE_CONFIGS.
 
     Parameters
     ----------
@@ -267,50 +265,60 @@ def worker(job_queue: mp.Queue, result_queue: mp.Queue) -> None:
         Queue where parsed benchmark results are pushed.
     """
 
+    # Temporary Cachegrind output file
+    outfile: Path = Path(f"/dev/shm/cg_{mp.current_process().pid}.out")
+
     while True:
         # Retrieve next job
         job: BenchmarkJob | None = job_queue.get()
         if job is None:
-            return
-
-        # Temporary Cachegrind output file
-        outfile = Path(f"/dev/shm/cg_{mp.current_process().pid}.out")
-
-        # Construct Cachegrind command
-        cmd = [
-            "valgrind",
-            "--tool=cachegrind",
-            "--quiet",
-            "--cache-sim=yes",
-            "--branch-sim=no",
-            f"--I1={job.l1},8,64",
-            f"--D1={job.l1},8,64",
-            f"--LL={job.l2},16,64",
-            f"--cachegrind-out-file={outfile}",
-            str(job.binary),
-        ]
-
-        try:
-            # Execute Cachegrind benchmark
-            subprocess.run(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=TIMEOUT,
-                check=False,
-            )
-            # Parse metrics from Cachegrind output and put to result queue
-            metrics = parse_summary(outfile)
-            result_queue.put(
-                (job.problem, job.submission, job.l1, job.l2, *metrics)
-            )
-
-        except subprocess.TimeoutExpired:
-            warn(f"Timeout: {job.submission} ({job.l1},{job.l2})")
-
-        finally:
             if outfile.exists():
                 outfile.unlink()
+            return
+
+        # Open input file if it exists
+        stdin_file = job.input_file.open("rb") if job.input_file else None
+
+        try:
+            # Benchmark each cache configuration
+            for l1, l2 in CACHE_CONFIGS:
+                # Rewind input file
+                if stdin_file is not None:
+                    stdin_file.seek(0)
+
+                # Construct Cachegrind command
+                cmd = [
+                    "valgrind",
+                    "--tool=cachegrind",
+                    "--quiet",
+                    "--cache-sim=yes",
+                    "--branch-sim=no",
+                    f"--I1={l1},8,64",
+                    f"--D1={l1},8,64",
+                    f"--LL={l2},16,64",
+                    f"--cachegrind-out-file={outfile}",
+                    str(job.submission.binary),
+                ]
+
+                # Execute Cachegrind benchmark
+                subprocess.run(
+                    cmd,
+                    stdin=stdin_file,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=TIMEOUT,
+                    check=False,
+                )
+                # Parse metrics from Cachegrind output and put to result queue
+                metrics: List[int] = parse_summary(outfile)
+                result_queue.put((job.name, l1, l2, *metrics))
+
+        except subprocess.TimeoutExpired:
+            warn(f"Timeout: {job.name} ({l1},{l2})")
+
+        finally:
+            if stdin_file is not None:
+                stdin_file.close()
 
 
 # Result Writer
@@ -337,8 +345,7 @@ def writer(result_queue: mp.Queue) -> None:
 
         # Write CSV header
         csv_writer.writerow([
-            "problem",
-            "submission",
+            "problem/submission",
             "L1",
             "L2",
             "Ir",
@@ -359,8 +366,6 @@ def writer(result_queue: mp.Queue) -> None:
             csv_writer.writerow(row)
 
 
-# Main
-
 def main() -> None:
     """
     Entry point for the benchmark pipeline.
@@ -377,11 +382,11 @@ def main() -> None:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
 
-    info("Workers:", NUM_WORKERS)
+    info(f"Workers: {NUM_WORKERS}")
 
     # Create multiprocessing queues
-    job_queue: mpQueue = mp.Queue(maxsize=NUM_WORKERS * 4)
-    result_queue: mpQueue = mp.Queue()
+    job_queue: mp.Queue = mp.Queue(maxsize=NUM_WORKERS * 4)
+    result_queue: mp.Queue = mp.Queue()
 
     # Generate CSV writer process
     writer_proc: mp.Process = mp.Process(target=writer, args=(result_queue,))
@@ -395,6 +400,7 @@ def main() -> None:
         workers.append(p)
 
     info("Starting benchmark")
+    start_time = time.perf_counter()
 
     # Generate jobs and put them onto the job queue
     generate_jobs(job_queue)
@@ -408,7 +414,9 @@ def main() -> None:
     result_queue.put(None)
     writer_proc.join()
 
+    elapsed = time.perf_counter() - start_time
     info("Benchmark complete")
+    info(f"Total benchmark time: {elapsed:.2f} seconds ({elapsed/60:.2f} minutes)")
 
 
 if __name__ == "__main__":
