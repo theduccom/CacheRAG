@@ -1,9 +1,0 @@
-#include<bits/stdc++.h>
-using namespace std;
-int main()
-{
-    for(int i=1,j;i<=9;++i)
-        for(j=1;j<=9;++j)
-        printf("%dx%d=%d\n",i,j,i*j);
-    return 0;
-}

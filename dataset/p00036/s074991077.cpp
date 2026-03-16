@@ -1,0 +1,2 @@
+#include <iostream>
+main(){int b[20],s,t,x,y,i;char l[8],a;for(;;){for(i=0;i<20;i++)b[i]=0;s=t=9;for(y=0;y<8;y++){if(!(std::cin>>l))break;for(x=0;x<8;x++){if(l[x]==49){if(t==9){s=x-1;t=y;}b[x-s+(y-t)*5]=1;}}}if(y<8)break;a=65;if(b[16])a=66;if(b[4])a=67;if(b[10])a=68;if(b[8])a=69;if(b[12])a=70;if(b[5]&&b[2])a=71;std::cout<<a<<"\n";}}

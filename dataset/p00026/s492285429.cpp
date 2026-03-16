@@ -1,0 +1,2 @@
+#include<iostream>
+main(){int p[14][14],x,y,a,m=0;std::string s;for(x=0;x<14;x++)for(y=0;y<14;y++)p[x][y]=0;while(std::cin>>s){x=s.at(0)-45;y=s.at(2)-45;a=s.at(4)-48;p[x][y]++,p[x-1][y]++,p[x+1][y]++,p[x][y-1]++,p[x][y+1]++;if(a>1)p[x-1][y-1]++,p[x+1][y-1]++,p[x-1][y+1]++,p[x+1][y+1]++;if(a>2)p[x-2][y]++,p[x][y-2]++,p[x+2][y]++,p[x][y+2]++;}for(x=3,a=0;x<13;x++)for(y=3;y<13;y++)p[x][y]==0?a++:0,p[x][y]>m?m=p[x][y]:0;std::cout<<a<<"\n"<<m<<"\n";}

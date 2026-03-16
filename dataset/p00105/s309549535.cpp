@@ -1,0 +1,58 @@
+#include <vector>
+#include <list>
+#include <map>
+#include <set>
+#include <stack>
+#include <queue>
+#include <deque>
+#include <algorithm>
+#include <utility>
+#include <functional>
+#include <sstream>
+#include <iostream>
+#include <cstdio>
+#include <cmath>
+#include <cstdlib>
+#include <cctype>
+#include <string>
+#include <cstring>
+#include <ctime>
+#include <climits>
+#include <cassert>
+using namespace std;
+inline int toInt(string s) {int v; istringstream sin(s);sin>>v;return v;}
+template<class T> inline string toString(T x) {ostringstream sout;sout<<x;return sout.str();}
+typedef vector<int> vi;
+typedef vector<vi> vvi;
+typedef vector<string> vs;
+typedef pair<int, int> pii;
+typedef long long ll;
+#define ALL(a) (a).begin(),(a).end()
+#define RALL(a) (a).rbegin(),(a).rend()
+#define EXIST(s,e) ((s).find(e)!=(s).end())
+#define FOR(i,a,b) for(int i=(a);i<(b);++i)
+#define REP(i,n) FOR(i,0,n)
+#define EACH(t,i,c) for(t::iterator i=(c).begin(); i!=(c).end(); ++i)
+const double EPS = 1e-10;
+const double PI  = acos(-1.0);
+
+int main(){
+	map<string,vi> se;
+	string s;
+	while(cin>>s){
+		int n;
+		cin>>n;
+		if(!EXIST(se,s)){
+			se[s]=vi();
+		}
+		se[s].push_back(n);
+	}
+	for(map<string,vi>::iterator it=se.begin();it!=se.end();it++){
+		cout<<(*it).first<<endl;
+		sort(ALL((*it).second));
+		REP(i,(*it).second.size()){
+			cout<<(i==0?"":" ")<<(*it).second[i];
+		}
+		cout<<endl;
+	}
+}

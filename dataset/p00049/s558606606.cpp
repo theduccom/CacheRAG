@@ -1,0 +1,2 @@
+#include <stdio.h>
+int main() {int A=0,B=0,AB=0,O=0,i;char Tex[5];while (scanf("%d,%s",&i,&Tex)!=EOF) {if (Tex[0]=='A' && Tex[1]=='B') AB++; else if (Tex[0]=='O') O++; else if (Tex[0]=='A') A++; else B++;} printf("%d\n%d\n%d\n%d\n",A,B,AB,O);return 0;}

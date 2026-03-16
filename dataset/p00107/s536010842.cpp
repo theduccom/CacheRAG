@@ -1,0 +1,29 @@
+#include<iostream>
+#include<vector>
+#include<cmath>
+#include<algorithm>
+#include<string>
+using namespace std;
+
+int main() {
+  vector<int> side(3);  // ???, ?¨?, ??????
+  int n;                // ??\??£????????°
+  int rad;              // ??\??£?????????
+  int diagonal;         // ????§?????????????
+  string ans[2] = { "NG", "OK" }; // ??????
+  while(1) {
+    cin >> side[0] >> side[1] >> side[2];
+    if (side[0] + side[1] + side[2] == 0) break;
+    // ????§????????¨????
+    {
+      sort(side.begin(), side.end());
+      diagonal = sqrt(pow((double)side[0], 2) + pow((double)side[1], 2));
+    }
+    cin >> n;
+    for (int i = 0; i < n; i++) {
+      cin >> rad;
+      cout << (rad*2 > diagonal ? "OK" : "NA") << endl;
+    }
+  }
+
+}

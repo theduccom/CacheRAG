@@ -1,0 +1,46 @@
+#include<iostream>
+#include<vector>
+#include<string>
+using namespace std;
+
+int main(){
+	string q,x,y;
+	int a,b,c,t;
+	a = 1;
+	b = 0;
+	c = 0;
+	t = 0;
+	while(cin >> q){
+		x = q[0];
+		y = q[2];
+
+
+		if(x != "C" && y != "C"){
+			t = b;
+			b = a;
+			a = t;
+
+		}
+		if(x != "A" && y != "A"){
+			t = b;
+			b = c;
+			c = t;
+
+		}
+		if(x != "B" && y != "B"){
+			t = c;
+			c = a;
+			a = t;
+
+		}
+
+	}
+	if(a == 1)
+		cout << "A" << endl;
+	if(b == 1)
+		cout << "B" << endl;
+	if(c == 1)
+		cout << "C" << endl;
+
+	return 0;
+}

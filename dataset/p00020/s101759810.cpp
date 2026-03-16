@@ -1,0 +1,12 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+int main() {
+	ios :: sync_with_stdio(false);
+	string s;
+	getline(cin, s);
+	for(char &c : s)
+		c = toupper(c);
+	cout << s << '\n';
+	return 0;
+}

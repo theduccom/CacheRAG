@@ -1,0 +1,71 @@
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <ctime>
+#include <cassert>
+#include <iostream>
+#include <cctype>
+#include <sstream>
+#include <string>
+#include <list>
+#include <vector>
+#include <queue>
+#include <set>
+#include <stack>
+#include <map>
+#include <utility>
+#include <numeric>
+#include <algorithm>
+#include <iterator>
+#include <bitset>
+#include <complex>
+#include <fstream>
+using namespace std;
+typedef long long ll;
+const double EPS = 1e-9;
+typedef vector<int> vint;
+typedef pair<int, int> pint;
+#define rep(i, n) REP(i, 0, n)
+#define ALL(v) v.begin(), v.end()
+#define MSG(a) cout << #a << " " << a << endl;
+#define REP(i, x, n) for(int i = x; i < n; i++)
+template<class T> T RoundOff(T a){ return int(a+.5-(a<0)); }
+template<class T, class C> void chmax(T& a, C b){ if(a < b) a = b; }
+template<class T, class C> void chmin(T& a, C b){ if(b < a) a = b; }
+template<class T, class C> pair<T, C> mp(T a, C b){ return make_pair(a, b); }
+
+vint getPrimeTable(int x)
+{
+	vint res(x + 1);
+	
+	REP(i, 2, x + 1)
+	{
+		res[i] = 1;
+		
+		for(int j = 2; j * j <= i; j++)
+		{
+			if(i % j == 0)
+			{
+				res[i] = 0;
+				break;
+			}
+		}
+	}
+	
+	return res;
+}
+
+int main()
+{
+    vint table(getPrimeTable(10000));
+	
+	for(int x; cin >> x && x;)
+	{
+		for(int i = x; 0 <= x; i--) if(table[i] && table[i - 2])
+		{
+			cout << i - 2 << " " << i << endl;
+			break;
+		}
+	}
+}
