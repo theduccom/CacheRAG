@@ -4,14 +4,6 @@ Cachegrind Benchmark Script for Project CodeNet.
 
 This script benchmarks C++ submissions from the Project CodeNet dataset
 using Valgrind's Cachegrind tool across multiple simulated cache sizes.
-
-Pipeline
---------
-
-Dataset -> Compilation -> Job Queue -> Worker Processes -> Result Queue -> CSV
-
-Workers execute Cachegrind and send parsed metrics to a dedicated
-writer process which writes results to a CSV file.
 """
 
 from __future__ import annotations
@@ -22,20 +14,31 @@ import subprocess
 import time
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Iterator, List, Tuple
+from typing import Iterator, List, Tuple, TypeAlias
+
+import signal
+import os
+import sys
 
 
+#/
 # Configuration
+#/
 
+# Directory configuration
 DATASET_DIR: Path = Path("dataset")
-BUILD_DIR: Path = Path("/dev/shm/build")
 INPUT_DIR: Path = Path("inputs")
 RESULT_DIR: Path = Path("results")
-RESULT_FILE: Path = RESULT_DIR / "benchmark.csv"
+BUILD_DIR: Path = Path("/dev/shm/CacheRAG/build")
+CACHEGRIND_DIR: Path = Path("/dev/shm/CacheRAG/cg")
+
+# Result files
+RESULT_FILE: Path = RESULT_DIR / f"benchmark{time.strftime('%H:%M:%S')}.csv"
+LOG_FILE: Path = RESULT_DIR / f"log.txt"
 
 # Compiler configuration
 CXX: str = "g++"
-CXX_FLAGS: List[str] = ["-O2", "-g", "-std=c++17"]
+CXX_FLAGS: List[str] = ["-O2", "-std=c++17", "-pipe", "-s"]
 
 # Cachegrind configurations: (L1 cache size, L2 cache size) in bytes
 CACHE_CONFIGS: List[Tuple[int, int]] = [
@@ -47,41 +50,27 @@ CACHE_CONFIGS: List[Tuple[int, int]] = [
     (128 * 1024, 4 * 1024 * 1024)
 ]
 
-NUM_WORKERS: int = max(1, mp.cpu_count() - 2)
-TIMEOUT: int = 60
+NWORKERS: int = max(1, mp.cpu_count() - 1)
+NUMA_CORES: int = 2
+SLEEP_TIME: int = 10
+TIMEOUT: int = 30
 
 # Logging options
 VERBOSE: bool = True
 SILENT: bool = False
 
-log_queue: mp.SimpleQueue = mp.SimpleQueue()
+# Multiprocessing setup
+mp.set_start_method("fork")
+stat_q: mp.SimpleQueue = mp.SimpleQueue()
+log_q: mp.SimpleQueue = mp.SimpleQueue()
+shutdown: mp.Event = mp.Event()
 
 
-# Logging functions
-
-def info(msg: str) -> None:
-    """
-    Print an informational message.
-
-    Messages are only printed if VERBOSE mode is enabled.
-    """
-    if VERBOSE:
-        log_queue.put(f"(I) {msg}")
-
-
-def warn(msg: str) -> None:
-    """
-    Print a warning message.
-
-    Messages are suppressed if SILENT mode is enabled.
-    """
-    if not SILENT:
-        log_queue.put(f" (W) {msg}")
-
-
+#/
 # Data Classes
+#/
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Submission:
     """
     Represents a source code submission from the dataset.
@@ -103,78 +92,109 @@ class Submission:
     binary: Path
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BenchmarkJob:
     """
     Represents a single Cachegrind benchmarking job.
-
-    Attributes
-    ----------
-    submission : Submission
-    input_file : Path | None
-    name : str
     """
 
     submission: Submission
-    input_file: Path | None
+    input_file: Path
     name: str
 
 
-# Dataset Processing
+#/
+# Logging Worker
+#/
 
-def retrieve_submissions() -> Iterator[Submission]:
-    """
-    Iterate through the dataset directory and yield all C++ submissions.
+def info(msg: str) -> None:
+    if VERBOSE:
+        log_q.put(("INFO", msg))
 
-    Yields
-    ------
-    Submission
-        Metadata describing each submission.
-    """
 
+def warn(msg: str) -> None:
+    if not SILENT:
+        log_q.put(("WARN", msg))
+
+
+def loggerfn(log_q: mp.SimpleQueue) -> None:
+    with LOG_FILE.open("w") as file:
+        while True:
+            # Retrieve message from queue
+            item: Tuple[str, str] | None = log_q.get()
+            if item is None:
+                break
+
+            level, msg = item
+            timestamp: str = time.strftime("%H:%M:%S")
+
+            # Write to log file
+            file.write(f"[{timestamp}] [{level}] {msg}\n")
+
+            # Add shell colors to level
+            if level == "INFO":
+                level = "\033[32mINFO\033[0m"
+            elif level == "WARN":
+                level = "\033[31mWARN\033[0m"
+
+            # Write to stdout
+            print(f"[{timestamp}] [{level}] {msg}", flush=True)
+
+
+#/
+# Compile stage
+#/
+
+def c_producerfn(compile_q: mp.SimpleQueue, sem: mp.Semaphore):
     for problem_dir in sorted(DATASET_DIR.iterdir()):
+        # Check if process was signaled
+        if shutdown.is_set():
+            break
+
         # Skip non-directory entries
         if not problem_dir.is_dir():
             continue
 
         problem: str = problem_dir.name
+        batch: List[Submission] = []
 
         for source in sorted(problem_dir.glob("*.cpp")):
             # Construct build path: BUILD_DIR/problem/submission
-            rel: Path = source.relative_to(DATASET_DIR)
-            binary: Path = BUILD_DIR / rel.with_suffix("")
+            rel = source.relative_to(DATASET_DIR)
+            binary = BUILD_DIR / rel.with_suffix("")
 
-            yield Submission(problem, source, binary)
+            batch.append(Submission(problem, source, binary))
 
-        info(f"Problem {problem} complete")
+        if not batch:
+            continue
+        
+        # Create a build directory for the problem
+        batch[0].binary.parent.mkdir(parents=True, exist_ok=True)
+
+        mid: int = len(batch) // 2
+
+        # Put problems into queue with batch size approx 150
+        sem.acquire()
+        compile_q.put((problem, batch[:mid]))
+        sem.acquire()
+        compile_q.put((problem, batch[mid:]))
 
 
-# Compilation
-
-def compile_submission(subm: Submission) -> bool:
+def _compile(id: int, subm: Submission) -> bool:
     """
-    Compile a submission into a binary executable.
-
-    Returns
-    -------
-    bool
-        True if compilation succeeds, False otherwise.
+    Compile a single submission.
     """
 
-    # Skip compilation if binary already exists
+    # Skip compilation if binary exists
     if subm.binary.exists():
         return True
 
-    # Create a build directory for the problem
-    subm.binary.parent.mkdir(parents=True, exist_ok=True)
-
-    # Construct compiler command: `g++ -O2 -g --std=c++17 src.cpp -o src`
-    cmd: List[str] = (
-        [CXX] + CXX_FLAGS + [str(subm.source), "-o", str(subm.binary)]
-    )
+    # Create compilation command with NUMA bindings
+    cmd: List[str] = ["numactl", f"--cpunodebind={id}", f"--membind={id}"]
+    cmd += [CXX] + CXX_FLAGS + [str(subm.source), "-o", str(subm.binary)]
 
     try:
-        subprocess.run(cmd, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
         return True
 
     except subprocess.CalledProcessError:
@@ -182,64 +202,86 @@ def compile_submission(subm: Submission) -> bool:
         return False
 
 
-# Job Generation
+def compilerfn(id: int, compile_q: mp.SimpleQueue, sem: mp.Semaphore):
+    # Statistics
+    q_delay: float = 0.0
+    f_subm: int = 0
 
-def generate_jobs(sem: mp.Semaphore, queue: mp.SimpleQueue) -> None:
-    """
-    Generate benchmarking jobs and enqueue them for worker processes.
+    while not shutdown.is_set():
+        # Retrieve batch from queue
+        tmp: float = time.perf_counter()
+        job: Tuple[str, List[Submissions]] | None = compile_q.get()
+        q_delay += time.perf_counter() - tmp
+        if job is None or shutdown.is_set():
+            break
 
-    Each submission is compiled and expanded into multiple jobs
-    corresponding to different cache configurations.
+        problem, batch = job
 
-    Parameters
-    ----------
-    queue : mp.SimpleQueue
-        Multiprocessing queue used to distribute BenchmarkJob objects
-        to worker processes.
-    """
+        # Compile every submission in batch
+        for subm in batch:
+            if not _compile(id, subm):
+                f_subm += 1
 
-    for subm in retrieve_submissions():
-        # Skip submissions that fail compilation
-        if not compile_submission(subm):
-            continue
-        
-        # Extract the benchmark name as 'problem/submission'
-        name: str = str(subm.source.relative_to(DATASET_DIR).with_suffix(""))
+        sem.release()
+
+    stat_q.put((q_delay, f_subm))
+
+
+#
+# Benchmark stage
+#
+
+def b_producerfn(benchmark_q: mp.SimpleQueue, sem: mp.Semaphore) -> None:
+    for problem_dir in sorted(BUILD_DIR.iterdir()):
+        # Check if process was signaled
+        if shutdown.is_set():
+            break
+
+        problem: str = problem_dir.name
+        empty: Path = Path("")
 
         # Create path to input file if the problem needs one
-        input_file: Path = INPUT_DIR / f"{subm.problem}.txt"
+        input_file: Path = INPUT_DIR / f"{problem}.txt"
         if not input_file.exists():
-            input_file = None
+            input_file = INPUT_DIR / "empty.txt"
 
-        sem.acquire()
-        queue.put(BenchmarkJob(subm, input_file, name))
+        for binary in sorted(problem_dir.glob("*")):
+            rel = binary.relative_to(BUILD_DIR)
+            subm: Submission = Submission(problem, rel, binary)
+
+            sem.acquire()
+            benchmark_q.put(BenchmarkJob(subm, input_file, str(rel)))
+
+        info(f"(producer) Problem {problem} complete")
 
 
-# Cachegrind Parsing
+def writerfn(result_q: mp.SimpleQueue) -> None:
+    # Statistics
+    q_delay: float = 0.0
 
-def parse_summary(path: Path) -> List[int]:
-    """
-    Parse Cachegrind output file and extract summary metrics.
+    with RESULT_FILE.open("w", newline="") as file:
+        writer = csv.writer(file)
 
-    Cachegrind produces a line beginning with "summary:"
-    containing instruction and memory statistics.
+        # Write CSV header
+        writer.writerow([
+            "problem", "submission", "L1", "L2", "Ir",
+            "I1mr", "ILmr", "Dr", "D1mr", "DLmr", "Dw"
+        ])
 
-    Parameters
-    ----------
-    path : Path
-        Path to Cachegrind output file.
+        while True:
+            # Retrieve next benchmark result
+            tmp: float = time.perf_counter()
+            row: Tuple | None = result_q.get()
+            q_delay += time.perf_counter() - tmp
+            if row is None:
+                break
 
-    Returns
-    -------
-    List[int]
-        List of integer metrics extracted from the summary line.
+            writer.writerow(row)
 
-    Raises
-    ------
-    RuntimeError
-        If the summary line cannot be found.
-    """
+    stat_q.put(q_delay)
 
+
+def _parse_summary(path: Path) -> List[int]:
     with path.open() as f:
         for line in f:
             if line.startswith("summary:"):
@@ -248,150 +290,96 @@ def parse_summary(path: Path) -> List[int]:
     raise RuntimeError("Cachegrind summary not found")
 
 
-# Worker Process
+def _cachegrind() -> None:
+    pass
 
-def worker(
-    sem: mp.Semaphore, job_queue: mp.SimpleQueue, result_queue: mp.SimpleQueue
-) -> None:
-    """
-    Worker process responsible for executing Cachegrind jobs.
 
-    Workers repeatedly pull BenchmarkJob objects from the job queue,
-    execute Cachegrind, parse the output metrics, and push results
-    to the result queue. Each job represents a single compiled
-    submission. The worker runs Cachegrind for every cache
-    configuration defined in CACHE_CONFIGS.
-
-    Parameters
-    ----------
-    job_queue : mp.Queue
-        Queue from which BenchmarkJob objects are retrieved.
-
-    result_queue : mp.Queue
-        Queue where parsed benchmark results are pushed.
-    """
+def benchmarkfn(id, benchmark_q, result_q, sem) -> None:
+    # Statistics
+    q_delay: float = 0.0
+    n_timeout: int = 0
+    n_cachegrind: int = 0
 
     # Temporary Cachegrind output file
-    outfile: Path = Path(f"/dev/shm/cg_{mp.current_process().pid}.out")
+    outfile: Path = CACHEGRIND_DIR / f"{mp.current_process().pid}.out"
 
-    while True:
-        # Retrieve next job
-        job: BenchmarkJob | None = job_queue.get()
-        if job is None:
-            if outfile.exists():
-                outfile.unlink()
-            return
-
-        # Decrement job_queue size
-        sem.release()
-
-        # Open input file if it exists
-        stdin_file = job.input_file.open("rb") if job.input_file else None
+    while not shutdown.is_set():
+        # Retrieve next benchmark job
+        tmp: float = time.perf_counter()
+        job: BenchmarkJob | None = benchmark_q.get()
+        q_delay += time.perf_counter() - tmp
+        if job is None or shutdown.is_set():
+            break
 
         try:
-            # Benchmark each cache configuration
-            for l1, l2 in CACHE_CONFIGS:
-                # Rewind input file
-                if stdin_file is not None:
+            with job.input_file.open("rb") as stdin_file:
+                # Benchmark each cache configuration
+                for l1, l2 in CACHE_CONFIGS:
+                    # Rewind input file
                     stdin_file.seek(0)
-
-                # Construct Cachegrind command
-                cmd = [
-                    "valgrind",
-                    "--tool=cachegrind",
-                    "--quiet",
-                    "--cache-sim=yes",
-                    "--branch-sim=no",
-                    f"--I1={l1},8,64",
-                    f"--D1={l1},8,64",
-                    f"--LL={l2},16,64",
-                    f"--cachegrind-out-file={outfile}",
-                    str(job.submission.binary),
-                ]
-
-                # Execute Cachegrind benchmark
-                subprocess.run(
-                    cmd,
-                    stdin=stdin_file,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=TIMEOUT,
-                    check=True,
-                )
-                # Parse metrics from Cachegrind output and put to result queue
-                metrics: List[int] = parse_summary(outfile)
-                result_queue.put((job.name, l1, l2, *metrics))
-
+                    # Construct Cachegrind command
+                    cmd = [
+                        "valgrind", "--tool=cachegrind", "--quiet",
+                        "--cache-sim=yes", "--branch-sim=no",
+                        f"--I1={l1},8,64", f"--D1={l1},8,64",
+                        f"--LL={l2},16,64", f"--cachegrind-out-file={outfile}",
+                        str(job.submission.binary)
+                    ]
+                    # Execute Cachegrind benchmark
+                    subprocess.run(
+                        cmd,
+                        stdin=stdin_file,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=TIMEOUT, check=True
+                    )
+                    # Parse metrics from Cachegrind output
+                    metrics = _parse_summary(outfile)
+                    result_q.put((job.name, l1, l2, *metrics))
         except subprocess.TimeoutExpired:
-            warn(f"Timeout: {job.name} ({l1},{l2})")
-
+            warn(f"(compute) Timeout expired: {job.name} ({l1},{l2})")
+            n_timeout += 1
         except subprocess.CalledProcessError:
-            warn(f"Cachegrind failed: {job.name} ({l1},{l2})")
-        
+            warn(f"(compute) Cachegrind failed: {job.name} ({l1},{l2})")
+            n_cachegrind += 1
         except RuntimeError as e:
-            warn(f"{str(e)}: {job.name} ({l1},{l2})")
+            warn(f"(compute) {str(e)}: {job.name} ({l1},{l2})")
 
-        finally:
-            if stdin_file is not None:
-                stdin_file.close()
+        # Release benchmark_q semaphore
+        sem.release()
 
+    # Unlink Cachegrind output file
+    if outfile.exists():
+        outfile.unlink()
 
-# Result Writer
-
-def writer(result_queue: mp.SimpleQueue) -> None:
-    """
-    Consume benchmark results and write them to a CSV file.
-
-    The writer process continuously reads rows from result_queue
-    and writes them to RESULT_FILE.
-
-    Shutdown Protocol
-    -----------------
-    The writer exits when it receives a `None` sentinel.
-
-    Parameters
-    ----------
-    result_queue : mp.Queue
-        Queue containing benchmark result rows.
-    """
-
-    with RESULT_FILE.open("w", newline="") as f:
-        csv_writer = csv.writer(f)
-
-        # Write CSV header
-        csv_writer.writerow([
-            "problem/submission",
-            "L1",
-            "L2",
-            "Ir",
-            "I1mr",
-            "ILmr",
-            "Dr",
-            "D1mr",
-            "DLmr",
-            "Dw",
-        ])
-
-        while True:
-            # Retrieve next benchmark result
-            row: tuple | None = result_queue.get()
-            if row is None:
-                return
-
-            csv_writer.writerow(row)
+    stat_q.put(("benchmark", q_delay, n_timeout, n_cachegrind))
 
 
-def logger(log_queue: mp.SimpleQueue) -> None:
-    """
-    Dedicated logging process that prints messages from other processes.
-    Ensures ordered, non-interleaved output.
-    """
-    while True:
-        msg = log_queue.get()
-        if msg is None:
-            break
-        timestamp: str = time.strftime("%H:%M:%S")
-        print(f"[{timestamp}] {msg}", flush=True)
+#/
+# Pipeline driver
+#/
+
+def _format_elpased(start: float, end: float) -> Tuple[int, int, int]:
+    elapsed: float = end - start
+    hours, rem = divmod(elapsed, 3600)
+    minutes, seconds = divmod(rem, 60)
+
+    return (int(hours), int(minutes), int(seconds))
+
+
+def _collect_statistics() -> None:
+    stat_q.put(None)
+
+
+def _wait(process: mp.Process) -> None:
+    try:
+        while process.is_alive():
+            time.sleep(SLEEP_TIME)
+    except KeyboardInterrupt:
+        info("SIGINT Recieved, shutting down")
+        shutdown.set()
+    finally:
+        process.join()
 
 
 def main() -> None:
@@ -402,57 +390,113 @@ def main() -> None:
     # Create output directories
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
+    CACHEGRIND_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Create logging process
-    logger_proc: mp.Process = mp.Process(target=logger, args=(log_queue,), daemon=True)
-    logger_proc.start()
+    # Create compile multiprocessing queues
+    compile_q: mp.SimpleQueue = mp.SimpleQueue()
+    c_sem: mp.Semaphore = mp.Semaphore(NWORKERS * 2)
 
-    info(f"Workers: {NUM_WORKERS}")
+    # Block signals in all child processes
+    orig = signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-    # Create multiprocessing queues
-    # job_queue: mp.Queue = mp.Queue(maxsize=NUM_WORKERS * 4)
-    sem: mp.Semaphore = mp.Semaphore(NUM_WORKERS * 4)
-    job_queue: mp.SimpleQueue = mp.SimpleQueue()
-    result_queue: mp.SimpleQueue = mp.SimpleQueue()
+    # Start logger
+    logger = mp.Process(target=loggerfn, args=(log_q,))
+    logger.start()
 
-    # Generate CSV writer process
-    writer_proc: mp.Process = mp.Process(target=writer, args=(result_queue,))
-    writer_proc.start()
+    info(f"Workers: {NWORKERS}")
 
-    # Generate worker processes
     workers: List[mp.Process] = []
-    for _ in range(NUM_WORKERS):
-        p: mp.Process = mp.Process(
-            target=worker, args=(sem, job_queue, result_queue)
-        )
+
+    # Start compile workers
+    for i in range(NWORKERS):
+        p = mp.Process(target=compilerfn, args=(i % NUMA_CORES, compile_q, c_sem))
         p.start()
         workers.append(p)
 
-    info("Starting benchmark")
-    start_time: float = time.perf_counter()
+    info("Starting compilation stage")
+    tstart: float = time.perf_counter()
 
-    # Generate jobs and put them onto the job queue
-    generate_jobs(sem, job_queue)
+    # Start producer
+    producer = mp.Process(target=c_producerfn, args=(compile_q, c_sem))
+    producer.start()
 
+    # Re-install default python signal handler
+    signal.signal(signal.SIGINT, orig)
+
+    # Wait for producer to exit
+    _wait(producer)
+
+    # Wait for compile workers to exit
     for _ in workers:
-        job_queue.put(None)
+        compile_q.put(None)
+    for p in workers:
+        p.join()
+    workers = []
 
+    # Format elapsed time
+    tend: float = time.perf_counter()
+    hrs, mins, secs = _format_elpased(tstart, tend)
+
+    info("Compilation stage complete")
+    info(f"Total compilation time: {hrs:02}:{mins:02}:{secs:02}")
+
+    # Collect pipeline statistics
+    _collect_statistics()
+
+    # Create benchmark multiprocessing queues
+    benchmark_q: mp.SimpleQueue = mp.SimpleQueue()
+    result_q: mp.SimpleQueue = mp.SimpleQueue()
+    b_sem: mp.Semaphore = mp.Semaphore(NWORKERS * 3)
+
+    # Block signals in all child processes
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    # Start benchmark workers
+    for i in range(NWORKERS):
+        p = mp.Process(target=benchmarkfn, args=(0, benchmark_q, result_q, b_sem))
+        p.start()
+        workers.append(p)
+
+    # Start CSV writer
+    writer = mp.Process(target=writerfn, args=(result_q,))
+    writer.start()
+
+    info("Starting benchmark stage")
+    tstart: float = time.perf_counter()
+
+    # Start producer
+    producer = mp.Process(target=b_producerfn, args=(benchmark_q, b_sem))
+    producer.start()
+
+    # Re-install default python signal handler
+    signal.signal(signal.SIGINT, orig)
+
+    # Wait for producer to exit
+    _wait(producer)
+
+    # Wait for compute workers to exit
+    for _ in workers:
+        benchmark_q.put(None)
     for p in workers:
         p.join()
 
-    result_queue.put(None)
-    writer_proc.join()
+    # Wait for writer to exit
+    result_q.put(None)
+    writer.join()
 
     # Format elapsed time
-    elapsed: float = time.perf_counter() - start_time
-    hours, rem = divmod(elapsed, 3600)
-    minutes, seconds = divmod(rem, 60)
+    tend: float = time.perf_counter()
+    hrs, mins, secs = _format_elpased(tstart, tend)
 
-    info("Benchmark complete")
-    info(f"Total benchmark time: {int(hours):02}:{int(minutes):02}:{int(seconds):02}")
+    info("Benchmark stage complete")
+    info(f"Total benchmark time: {hrs:02}:{mins:02}:{secs:02}")
+    
+    # Collect pipeline statistics
+    _collect_statistics()
 
-    log_queue.put(None)
-    logger_proc.join()
+    # Wait for logger to exit
+    log_q.put(None)
+    logger.join()
 
 
 if __name__ == "__main__":

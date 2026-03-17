@@ -45,6 +45,12 @@ submissions: scripts
 benchmark:
 	$(PYTHON) src/benchmark.py 2>&1 | tee benchmark_out.txt
 
+v2:
+	$(PYTHON) src/v2.py 2>&1 | tee benchmark_out.txt
+
+wip:
+	$(PYTHON) src/wip.py 2>&1 | tee benchmark_out.txt
+
 inputs: scripts
 	./$(SCRIPTS)/generate_inputs.sh -d $(INPUT) -f $(FLAGS)
 
@@ -93,7 +99,7 @@ clean-dataset:
 	@python -m venv .venv
 
 venv: .venv
-	@source .venv/bin/activate && pip install numpy openai
+	@source .venv/bin/activate && pip install psutil numpy openai
 
 clean-venv:
 	rm -rf .venv/

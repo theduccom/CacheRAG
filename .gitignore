@@ -1,8 +1,10 @@
 Project_CodeNet.tar.gz
+Project_CodeNet_C++1400.tar.gz
 Project_CodeNet/
+Project_CodeNet_C++1400/
 .venv/
 results/
 inputs/
 data/
 test/
-benchmark_out.txt
+out.txt
