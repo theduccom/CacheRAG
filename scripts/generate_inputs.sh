@@ -78,3 +78,9 @@ generate_numbers "p02277" 100000 1 2000000
 
 # nlogn sorting algorithms
 generate_numbers "sort" 1000000 0 2000000
+
+
+# p00001 - List of Top 3 Hills
+generate_numbers "p00001" 10 1 5000
+
+generate_numbers "p00002" 180 1 

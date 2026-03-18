@@ -14,7 +14,6 @@ import subprocess
 import time
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Iterator, List, Tuple, TypeAlias
 
 import signal
 import os
@@ -38,10 +37,10 @@ LOG_FILE: Path = RESULT_DIR / f"log.txt"
 
 # Compiler configuration
 CXX: str = "g++"
-CXX_FLAGS: List[str] = ["-O2", "-std=c++17", "-pipe", "-s"]
+CXX_FLAGS: list[str] = ["-O2", "-std=c++17", "-pipe", "-s"]
 
 # Cachegrind configurations: (L1 cache size, L2 cache size) in bytes
-CACHE_CONFIGS: List[Tuple[int, int]] = [
+CACHE_CONFIGS: list[tuple[int, int]] = [
     (4 * 1024, 32 * 1024),
     (8 * 1024, 32 * 1024),
     (16 * 1024, 128 * 1024),
@@ -52,12 +51,16 @@ CACHE_CONFIGS: List[Tuple[int, int]] = [
 
 NWORKERS: int = max(1, mp.cpu_count() - 1)
 NUMA_CORES: int = 2
-SLEEP_TIME: int = 10
-TIMEOUT: int = 30
+SLEEP_TIME: int = 5
+TIMEOUT: int = 10
 
 # Logging options
 VERBOSE: bool = True
 SILENT: bool = False
+
+# Typedefs
+type queue_t = mp.SimpleQueue
+type sem_t = mp.Semaphore
 
 # Multiprocessing setup
 mp.set_start_method("fork")
@@ -100,36 +103,35 @@ class BenchmarkJob:
 
     submission: Submission
     input_file: Path
-    name: str
 
 
 #/
 # Logging Worker
 #/
 
-def info(msg: str) -> None:
+def info(msg: str, name: str = "@") -> None:
     if VERBOSE:
-        log_q.put(("INFO", msg))
+        log_q.put(("INFO", msg, name))
 
 
-def warn(msg: str) -> None:
+def warn(msg: str, name: str = "@") -> None:
     if not SILENT:
-        log_q.put(("WARN", msg))
+        log_q.put(("WARN", msg, name))
 
 
-def loggerfn(log_q: mp.SimpleQueue) -> None:
+def loggerfn(log_q: queue_t) -> None:
     with LOG_FILE.open("w") as file:
         while True:
             # Retrieve message from queue
-            item: Tuple[str, str] | None = log_q.get()
+            item: tuple[str, str, str] | None = log_q.get()
             if item is None:
                 break
 
-            level, msg = item
+            level, msg, name = item
             timestamp: str = time.strftime("%H:%M:%S")
 
             # Write to log file
-            file.write(f"[{timestamp}] [{level}] {msg}\n")
+            file.write(f"[{timestamp}][{level}][{name}] {msg}\n")
 
             # Add shell colors to level
             if level == "INFO":
@@ -138,14 +140,14 @@ def loggerfn(log_q: mp.SimpleQueue) -> None:
                 level = "\033[31mWARN\033[0m"
 
             # Write to stdout
-            print(f"[{timestamp}] [{level}] {msg}", flush=True)
+            print(f"[{timestamp}][{level}][{name}] {msg}", flush=True)
 
 
 #/
 # Compile stage
 #/
 
-def c_producerfn(compile_q: mp.SimpleQueue, sem: mp.Semaphore):
+def c_producerfn(compile_q: queue_t, sem: sem_t) -> None:
     for problem_dir in sorted(DATASET_DIR.iterdir()):
         # Check if process was signaled
         if shutdown.is_set():
@@ -156,13 +158,11 @@ def c_producerfn(compile_q: mp.SimpleQueue, sem: mp.Semaphore):
             continue
 
         problem: str = problem_dir.name
-        batch: List[Submission] = []
+        batch: list[Submission] = []
 
         for source in sorted(problem_dir.glob("*.cpp")):
-            # Construct build path: BUILD_DIR/problem/submission
-            rel = source.relative_to(DATASET_DIR)
-            binary = BUILD_DIR / rel.with_suffix("")
-
+            # Construct build path and create submission
+            binary: Path = BUILD_DIR / problem / source.stem
             batch.append(Submission(problem, source, binary))
 
         if not batch:
@@ -175,12 +175,14 @@ def c_producerfn(compile_q: mp.SimpleQueue, sem: mp.Semaphore):
 
         # Put problems into queue with batch size approx 150
         sem.acquire()
-        compile_q.put((problem, batch[:mid]))
+        compile_q.put(batch[:mid])
         sem.acquire()
-        compile_q.put((problem, batch[mid:]))
+        compile_q.put(batch[mid:])
+
+    info("Compiler producer complete", "g++")
 
 
-def _compile(id: int, subm: Submission) -> bool:
+def _compile(_cmd: list[str], subm: Submission) -> bool:
     """
     Compile a single submission.
     """
@@ -189,56 +191,61 @@ def _compile(id: int, subm: Submission) -> bool:
     if subm.binary.exists():
         return True
 
-    # Create compilation command with NUMA bindings
-    cmd: List[str] = ["numactl", f"--cpunodebind={id}", f"--membind={id}"]
-    cmd += [CXX] + CXX_FLAGS + [str(subm.source), "-o", str(subm.binary)]
+    cmd: list[str] = _cmd + [str(subm.source), "-o", str(subm.binary)]
 
     try:
         subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
         return True
-
     except subprocess.CalledProcessError:
-        warn(f"Compilation failed: {subm.source}")
-        return False
+        try:
+            # Compile again including all standard c++ libraries
+            cmd += ["--include", "bits/stdc++.h"]
+            subprocess.run(cmd, check=True, stderr=subprocess.DEVNULL)
+            return True
+        except subprocess.CalledProcessError:
+            warn(f"Compilation failed: {subm.source}", "g++")
+            return False
 
 
-def compilerfn(id: int, compile_q: mp.SimpleQueue, sem: mp.Semaphore):
+def compilerfn(id: int, compile_q: queue_t, sem: sem_t):
     # Statistics
     q_delay: float = 0.0
     f_subm: int = 0
 
+    # Create compilation command with NUMA bindings
+    _cmd: list[str] = (
+        ["numactl", f"--cpunodebind={id}", f"--membind={id}"] if id >= 0 else []
+    ) + [CXX] + CXX_FLAGS
+
     while not shutdown.is_set():
         # Retrieve batch from queue
         tmp: float = time.perf_counter()
-        job: Tuple[str, List[Submissions]] | None = compile_q.get()
+        batch: list[Submissions] | None = compile_q.get()
         q_delay += time.perf_counter() - tmp
-        if job is None or shutdown.is_set():
+        if batch is None or shutdown.is_set():
             break
-
-        problem, batch = job
 
         # Compile every submission in batch
         for subm in batch:
-            if not _compile(id, subm):
+            if not _compile(_cmd, subm):
                 f_subm += 1
 
+        # Release compile_q semaphore
         sem.release()
 
-    stat_q.put((q_delay, f_subm))
+    stat_q.put(("compile", q_delay, f_subm))
 
 
-#
+#/
 # Benchmark stage
-#
+#/
 
-def b_producerfn(benchmark_q: mp.SimpleQueue, sem: mp.Semaphore) -> None:
+def b_producerfn(benchmark_q: queue_t, sem: sem_t) -> None:
     for problem_dir in sorted(BUILD_DIR.iterdir()):
-        # Check if process was signaled
         if shutdown.is_set():
             break
 
         problem: str = problem_dir.name
-        empty: Path = Path("")
 
         # Create path to input file if the problem needs one
         input_file: Path = INPUT_DIR / f"{problem}.txt"
@@ -246,16 +253,21 @@ def b_producerfn(benchmark_q: mp.SimpleQueue, sem: mp.Semaphore) -> None:
             input_file = INPUT_DIR / "empty.txt"
 
         for binary in sorted(problem_dir.glob("*")):
-            rel = binary.relative_to(BUILD_DIR)
-            subm: Submission = Submission(problem, rel, binary)
+            # Check if process was signaled
+            if shutdown.is_set():
+                break
+
+            # Generate relative path to source
+            source: Path = DATASET_DIR / problem / binary.stem
+            subm: Submission = Submission(problem, source, binary)
 
             sem.acquire()
-            benchmark_q.put(BenchmarkJob(subm, input_file, str(rel)))
+            benchmark_q.put(BenchmarkJob(subm, input_file))
 
-        info(f"(producer) Problem {problem} complete")
+    info("Benchmark producer complete", "$")
 
 
-def writerfn(result_q: mp.SimpleQueue) -> None:
+def writerfn(result_q: queue_t) -> None:
     # Statistics
     q_delay: float = 0.0
 
@@ -271,18 +283,19 @@ def writerfn(result_q: mp.SimpleQueue) -> None:
         while True:
             # Retrieve next benchmark result
             tmp: float = time.perf_counter()
-            row: Tuple | None = result_q.get()
+            row: tuple[str, str, *tuple[int, ...]] | None = result_q.get()
             q_delay += time.perf_counter() - tmp
             if row is None:
                 break
 
             writer.writerow(row)
 
-    stat_q.put(q_delay)
+    stat_q.put(("writer", q_delay))
 
 
-def _parse_summary(path: Path) -> List[int]:
-    with path.open() as f:
+def _parse_summary(cg_out: Path) -> list[int]:
+    # Find summary line in Cachegrind output
+    with cg_out.open("r") as f:
         for line in f:
             if line.startswith("summary:"):
                 return [int(x) for x in line.split()[1:]]
@@ -290,76 +303,87 @@ def _parse_summary(path: Path) -> List[int]:
     raise RuntimeError("Cachegrind summary not found")
 
 
-def _cachegrind() -> None:
-    pass
+def _cachegrind(job: BenchmarkJob, cg_out: Path, result_q: queue_t) -> None:
+    with job.input_file.open("rb") as stdin_file:
+        # Create problem and source for csv
+        problem: str = job.submission.problem
+        source: str = job.submission.source.stem
+
+        # Benchmark each cache configuration
+        for l1, l2 in CACHE_CONFIGS:
+            # Rewind input file
+            stdin_file.seek(0)
+
+            # Construct Cachegrind command
+            cmd: list[str] = [
+                "valgrind", "--tool=cachegrind", "--quiet",
+                "--cache-sim=yes", "--branch-sim=no",
+                f"--I1={l1},8,64", f"--D1={l1},8,64",
+                f"--LL={l2},16,64",
+                f"--cachegrind-out-file={cg_out}",
+                str(job.submission.binary)
+            ]
+
+            # Execute Cachegrind benchmark
+            subprocess.run(
+                cmd,
+                stdin=stdin_file,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=TIMEOUT,
+                check=True
+            )
+
+            # Parse metrics from Cachegrind output
+            metrics: list[int] = _parse_summary(cg_out)
+            result_q.put((problem, source, l1, l2, *metrics))
 
 
-def benchmarkfn(id, benchmark_q, result_q, sem) -> None:
+def benchmarkfn(id: int, benchmark_q: queue_t, result_q: queue_t, sem: sem_t) -> None:
     # Statistics
     q_delay: float = 0.0
     n_timeout: int = 0
-    n_cachegrind: int = 0
+    n_cg: int = 0
 
     # Temporary Cachegrind output file
-    outfile: Path = CACHEGRIND_DIR / f"{mp.current_process().pid}.out"
+    cg_out: Path = CACHEGRIND_DIR / f"{mp.current_process().pid}.out"
 
-    while not shutdown.is_set():
+    while True:
         # Retrieve next benchmark job
         tmp: float = time.perf_counter()
         job: BenchmarkJob | None = benchmark_q.get()
         q_delay += time.perf_counter() - tmp
-        if job is None or shutdown.is_set():
+        if job is None:
             break
+        
+        name: str = str(job.submission.binary)
 
         try:
-            with job.input_file.open("rb") as stdin_file:
-                # Benchmark each cache configuration
-                for l1, l2 in CACHE_CONFIGS:
-                    # Rewind input file
-                    stdin_file.seek(0)
-                    # Construct Cachegrind command
-                    cmd = [
-                        "valgrind", "--tool=cachegrind", "--quiet",
-                        "--cache-sim=yes", "--branch-sim=no",
-                        f"--I1={l1},8,64", f"--D1={l1},8,64",
-                        f"--LL={l2},16,64", f"--cachegrind-out-file={outfile}",
-                        str(job.submission.binary)
-                    ]
-                    # Execute Cachegrind benchmark
-                    subprocess.run(
-                        cmd,
-                        stdin=stdin_file,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=TIMEOUT, check=True
-                    )
-                    # Parse metrics from Cachegrind output
-                    metrics = _parse_summary(outfile)
-                    result_q.put((job.name, l1, l2, *metrics))
+            _cachegrind(job, cg_out, result_q)
         except subprocess.TimeoutExpired:
-            warn(f"(compute) Timeout expired: {job.name} ({l1},{l2})")
+            warn(f"Timeout expired: {name}", "$")
             n_timeout += 1
         except subprocess.CalledProcessError:
-            warn(f"(compute) Cachegrind failed: {job.name} ({l1},{l2})")
-            n_cachegrind += 1
+            warn(f"Cachegrind failed: {name}", "$")
+            n_cg += 1
         except RuntimeError as e:
-            warn(f"(compute) {str(e)}: {job.name} ({l1},{l2})")
-
-        # Release benchmark_q semaphore
-        sem.release()
+            warn(f"{str(e)}: {name}", "$")
+        finally:
+            # Release benchmark_q semaphore
+            sem.release()
 
     # Unlink Cachegrind output file
-    if outfile.exists():
-        outfile.unlink()
+    if cg_out.exists():
+        cg_out.unlink()
 
-    stat_q.put(("benchmark", q_delay, n_timeout, n_cachegrind))
+    stat_q.put(("benchmark", q_delay, n_timeout, n_cg))
 
 
 #/
 # Pipeline driver
 #/
 
-def _format_elpased(start: float, end: float) -> Tuple[int, int, int]:
+def _format_elapsed(start: float, end: float) -> tuple[int, int, int]:
     elapsed: float = end - start
     hours, rem = divmod(elapsed, 3600)
     minutes, seconds = divmod(rem, 60)
@@ -369,6 +393,54 @@ def _format_elpased(start: float, end: float) -> Tuple[int, int, int]:
 
 def _collect_statistics() -> None:
     stat_q.put(None)
+
+    # Get stage identifer from stat queue
+    stage: tuple = stat_q.get()
+
+    if stage[0] == "compile stage":
+        q_delay: float = 0.0
+        f_subm: int = 0
+
+        for i in range(NWORKERS):
+            stats: tuple | None = stat_q.get()
+            if stats is None:
+                warn(f"Missing compile stats: ({i})", "#,g++")
+                break
+
+            q_delay += stats[1]
+            f_subm += stats[2]
+
+        info(f"Average queue delay: {(q_delay / NWORKERS):.03f}", "#,g++")
+        info(f"Total failed submissions: {f_subm}", "#,g++")
+
+    elif stage[0] == "benchmark stage":
+        q_delay: float = 0.0
+        n_timeout: int = 0
+        n_cg: int = 0
+    
+        for i in range(NWORKERS):
+            stats: tuple | None = stat_q.get()
+            if stats is None:
+                warn(f"Missing benchmark stats: ({i})", "#,$")
+                break
+
+            q_delay += stats[1]
+            n_timeout += stats[2]
+            n_cg += stats[3]
+
+        info(f"Average queue delay: {(q_delay / NWORKERS):.03f}", "#,$")
+        info(f"Total timeout expired: {n_timeout}", "#,$")
+        info(f"Total cachegrind errors: {n_cg}", "#,$")
+
+        stats: tuple | None = stat_q.get()
+
+        info(f"Average queue delay", "#,csv")
+
+    else:
+        warn(f"Unkown stage: {stage}", "#")
+
+    if stat_q.get() is not None:
+        warn("Stats q error")
 
 
 def _wait(process: mp.Process) -> None:
@@ -380,7 +452,6 @@ def _wait(process: mp.Process) -> None:
         shutdown.set()
     finally:
         process.join()
-
 
 def main() -> None:
     """
@@ -394,7 +465,7 @@ def main() -> None:
 
     # Create compile multiprocessing queues
     compile_q: mp.SimpleQueue = mp.SimpleQueue()
-    c_sem: mp.Semaphore = mp.Semaphore(NWORKERS * 2)
+    c_sem: mp.Semaphore = mp.Semaphore(NWORKERS + 10)
 
     # Block signals in all child processes
     orig = signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -405,7 +476,7 @@ def main() -> None:
 
     info(f"Workers: {NWORKERS}")
 
-    workers: List[mp.Process] = []
+    workers: list[mp.Process] = []
 
     # Start compile workers
     for i in range(NWORKERS):
@@ -414,6 +485,7 @@ def main() -> None:
         workers.append(p)
 
     info("Starting compilation stage")
+    stat_q.put(("compile stage",))
     tstart: float = time.perf_counter()
 
     # Start producer
@@ -435,7 +507,7 @@ def main() -> None:
 
     # Format elapsed time
     tend: float = time.perf_counter()
-    hrs, mins, secs = _format_elpased(tstart, tend)
+    hrs, mins, secs = _format_elapsed(tstart, tend)
 
     info("Compilation stage complete")
     info(f"Total compilation time: {hrs:02}:{mins:02}:{secs:02}")
@@ -462,6 +534,7 @@ def main() -> None:
     writer.start()
 
     info("Starting benchmark stage")
+    stat_q.put(("benchmark stage",))
     tstart: float = time.perf_counter()
 
     # Start producer
@@ -486,7 +559,7 @@ def main() -> None:
 
     # Format elapsed time
     tend: float = time.perf_counter()
-    hrs, mins, secs = _format_elpased(tstart, tend)
+    hrs, mins, secs = _format_elapsed(tstart, tend)
 
     info("Benchmark stage complete")
     info(f"Total benchmark time: {hrs:02}:{mins:02}:{secs:02}")
