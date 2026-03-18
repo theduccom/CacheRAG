@@ -99,7 +99,7 @@ clean-dataset:
 	@python -m venv .venv
 
 venv: .venv
-	@source .venv/bin/activate && pip install psutil numpy openai
+	@source .venv/bin/activate && pip install numpy openai
 
 clean-venv:
 	rm -rf .venv/
