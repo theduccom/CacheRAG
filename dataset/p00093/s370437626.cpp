@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {int a,b,j,k=0;while (1) {scanf("%d %d",&a,&b);if (!a && !b) return 0;if (k++) puts("");for (j=0;a<=b;a++) if ((a%4==0 && a%100) || a%400==0) printf("%d\n",a),j++; if (!j) puts("NA");}}

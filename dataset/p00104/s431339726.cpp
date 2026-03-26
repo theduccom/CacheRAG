@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {int N,M,i,j;char RB[105][105];while (scanf("%d %d",&N,&M)!=EOF && N && M) {for (i=0;i<N;scanf("%s",&RB[i++]));i=0,j=0;while (RB[i][j]!='?' && RB[i][j]!='.') {if (RB[i][j]=='>') RB[i][j++]='?'; else if (RB[i][j]=='<') RB[i][j--]='?'; else if (RB[i][j]=='^') RB[i--][j]='?'; else RB[i++][j]='?';} if (RB[i][j]=='.') printf("%d %d\n",j,i); else printf("LOOP\n");} return 0;}

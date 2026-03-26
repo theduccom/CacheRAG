@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {double coor[22][2],ans=0;int i=0,N;while (scanf("%lf,%lf",&coor[i][0],&coor[i][1])!=EOF) i++;for (N=0;N<i;N++) ans+=coor[N][0]*coor[(N+1)%i][1]-coor[N][1]*coor[(N+1)%i][0];if (ans<0) ans=-ans;printf("%.6lf\n",ans/2);return 0;}

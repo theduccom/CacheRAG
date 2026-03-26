@@ -1,4 +1,0 @@
-#include<iostream>
-#include<string>
-#include<cstring>
-int _gap;char r(char g){return(g-'a'+_gap)%26+'a';}int main(){std::string s;while(std::getline(std::cin,s)){char b[81],*p,*c;c=b;strcpy(b,s.c_str());int gap=0;do{p=strtok(c," .\n");if(p!=NULL){int l=strlen(p);if(l>=3){_gap='t'-p[0];if(r(p[1])=='h'){if(l==3){if(r(p[2])=='e'){gap=_gap;}}else if(l==4){if(r(p[2])=='i'&&r(p[3])=='s'||r(p[2])=='a'&&r(p[3])=='t'){gap=_gap;break;}}}}}c=NULL;}while(p!=NULL);for(std::string::iterator it=s.begin();it!=s.end();++it){if(*it!=' '&&*it!='.'&&*it!='\n'){std::cout<<static_cast<char>((*it+gap-'a')%26+'a');}else{std::cout<<*it;}}puts("");}}

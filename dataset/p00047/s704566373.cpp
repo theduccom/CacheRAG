@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {int RB[3]={1,0,0};char Tex[5];while (scanf("%s",&Tex)!=EOF) if (RB[Tex[0]-'A']!=RB[Tex[2]-'A']) RB[Tex[0]-'A']+=RB[Tex[2]-'A'],RB[Tex[2]-'A']=RB[Tex[0]-'A']-RB[Tex[2]-'A'],RB[Tex[0]-'A']-=RB[Tex[2]-'A']; if (RB[0]) puts("A"); else if (RB[1]) puts("B"); else puts("C");return 0;}

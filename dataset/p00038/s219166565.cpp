@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {int RB[15],t,p,f,l,i;while (scanf("%d",&t)!=EOF) {for (i=0;i<15;RB[i++]=0);RB[t]++;for (i=1;i<5;i++) scanf(",%d",&t),RB[t]++;t=p=f=l=0;for (i=0;i<15;i++) if (RB[i]==4) f++; else if (RB[i]==3) t++; else if (RB[i]==2) p++;RB[14]=RB[1];for (i=1;i<11;i++) if (RB[i]*RB[i+1]*RB[i+2]*RB[i+3]*RB[i+4]) l=1;if (l) puts("straight"); else if (f) puts("four card"); else if (t && p) puts("full house"); else if (t) puts("three card"); else if (p==2) puts("two pair"); else if (p) puts("one pair"); else puts("null");}return 0;}

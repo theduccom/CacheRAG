@@ -1,3 +1,0 @@
-#include <iostream>
-#include <string>
-using namespace std;int main(){int b[5][4];int sx,sy;int x,y;string line;while(true){for(int i=0;i<20;i++)b[i%5][i/5]=0;sx=sy=-1;for(y=0;y<8;y++){if (!(cin>>line))break;for(x=0;x<8;x++){if (line[x]=='1'){if (sy==-1){sx=x-1;sy=y;}b[x-sx][y-sy] = 1;}}}if (y<8)break;char a;if(b[2][0]&&b[1][1]&&b[2][1])a='A';if(b[1][3])a='B';if(b[4][0])a='C';if(b[0][2])a='D';if(b[3][1])a='E';if(b[2][2])a='F';if(b[0][1]&&b[2][0])a='G';cout<<a<<endl;}}

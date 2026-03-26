@@ -1,2 +1,0 @@
-#include <stdio.h>
-int main() {int RB[10],N,i,j;while (scanf("%d",&N)!=EOF && N) {i=0;while (i<10) RB[i++]=0;while (N--) scanf("%d",&i),RB[i]++;i=0;while (i<10) {if (!RB[i]) putchar('-');for (j=0;j<RB[i];putchar('*'),j++);puts(""),i++;}} return 0;}
